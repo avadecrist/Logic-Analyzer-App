@@ -1,0 +1,24 @@
+{
+  "name": "electron_app",
+  "version": "1.0.0",
+  "description": "logic analyzer",
+  "homepage": "https://github.com/avadecrist/Logic-Analyzer-App#readme",
+  "bugs": {
+    "url": "https://github.com/avadecrist/Logic-Analyzer-App/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/avadecrist/Logic-Analyzer-App.git"
+  },
+  "license": "ISC",
+  "author": "Ava DeCristofaro",
+  "type": "commonjs",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "devDependencies": {
+    "electron": "^43.3.0"
+  }
+}
