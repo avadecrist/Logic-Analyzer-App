@@ -7,10 +7,6 @@ module top (
     input  logic        UART_RXD,
     output logic        UART_TXD
 );
-
-    // ----------------------------------------------------------------
-    // Constants
-    // ----------------------------------------------------------------
     localparam int ClksPerBit = 868;
     localparam int AckLen     = 5;
 
