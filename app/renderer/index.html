@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <!-- https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'"
+    />
+    <meta
+      http-equiv="X-Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'"
+    />
+    <title>Logic Analyzer App</title>
+  </head>
+  <body>
+    <h1>Logic Analyzer App</h1>
+    <button id="startStop">Start</button>
+
+    <!-- data table with channels here -->
+    <table id="channelData">
+      <thead>
+        <tr>
+          <th>Channel</th>
+          <th>Value</th>
+        </tr>
+      </thead>
+      <tbody>
+        <!-- rows to be added -->
+      </tbody>
+    </table>
+    
+    <script src="app.js"></script>
+  </body>
+</html>

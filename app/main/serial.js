@@ -1,0 +1,1 @@
+// isolate all hardware communication here
