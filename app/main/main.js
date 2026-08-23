@@ -1,9 +1,17 @@
-const { app, BrowserWindow } = require('electron')
+const { app, BrowserWindow, ipcMain } = require('electron')
+const path = require('node:path')
+const serial = require('./serial')
 
 const createWindow = () => {
   const win = new BrowserWindow({
-    width: 800,
-    height: 600
+    width: 1440,
+    height: 860,
+    minWidth: 900,
+    minHeight: 560,
+    backgroundColor: '#080b14',
+    webPreferences: {
+      preload: path.join(__dirname, '../preload/preload.js')
+    }
   })
 
   win.loadFile('renderer/index.html')
@@ -17,24 +25,8 @@ app.whenReady().then(() => {
   })
 })
 
-/* play around with once serial port is working
+app.on('before-quit', () => {
+  serial.disconnect()
+})
 
-const { ipcMain } = require('electron');
-const serial = require('./serial');
-
-ipcMain.handle('serial:listPorts', async () => {
-    return serial.listPorts();
-});
-
-ipcMain.handle('serial:connect', async (event, options) => {
-    return serial.connect(options);
-});
-
-ipcMain.handle('serial:disconnect', async () => {
-    return serial.disconnect();
-});
-
-ipcMain.handle('serial:command', async (event, command) => {
-    return serial.sendCommand(command);
-});
-*/
+ipcMain.handle('board:command', (event, command) => serial.sendCommand(command))

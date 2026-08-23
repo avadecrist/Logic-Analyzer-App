@@ -12,24 +12,71 @@
       content="default-src 'self'; script-src 'self'"
     />
     <title>Logic Analyzer App</title>
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <h1>Logic Analyzer App</h1>
-    <button id="startStop">Start</button>
+    <header class="topbar">
+      <button id="startStop" class="btn-start">
+        <span class="icon-play" id="startStopIcon">&#9654;</span>
+        <span id="startStopLabel">START</span>
+      </button>
 
-    <!-- data table with channels here -->
-    <table id="channelData">
-      <thead>
-        <tr>
-          <th>Channel</th>
-          <th>Value</th>
-        </tr>
-      </thead>
-      <tbody>
-        <!-- rows to be added -->
-      </tbody>
-    </table>
-    
+      <div class="status-cluster">
+        <span class="status-item">
+          <span class="status-dot" id="statusDot"></span>
+          <span id="statusText">HALTED</span>
+        </span>
+        <span class="sep">|</span>
+        <span class="status-item">SR <span id="sampleRate">1.0 kS/s</span></span>
+        <span class="sep">|</span>
+        <span class="status-item">TRIG <span id="trigMode">FREE RUN</span></span>
+        <span class="sep">|</span>
+        <span class="status-item">WIN <span id="winSize">2000 ms</span></span>
+        <span class="sep">|</span>
+        <span class="status-item">DEPTH <span id="depth">64 MB</span></span>
+      </div>
+
+      <div class="brand">&#9889; LOGIC ANALYZER &#9889;</div>
+
+      <div class="topbar-right">
+        <span id="timer" class="timer">00:00.000</span>
+        <button id="testConnectionBtn" class="btn-outline">
+          TEST CONNECTION
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 2 11 13"/>
+            <path d="M22 2 15 22l-4-9-9-4 20-7Z"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <main class="analyzer" id="analyzer">
+      <div class="ruler-row">
+        <div class="ruler-label-spacer">CHANNEL</div>
+        <div class="ruler-track" id="rulerTrack"></div>
+      </div>
+
+      <div class="channels" id="channels"></div>
+
+      <div class="grid-overlay" id="gridOverlay"></div>
+      <div class="cursor-line" id="cursorLine"></div>
+    </main>
+
+    <!-- temparary values -->
+    <footer class="statusbar">
+      <span id="protoList">SPI / I2C / UART</span>
+      <span class="sep">|</span>
+      <span id="vcc">VCC 3.3 V</span>
+      <span class="sep">|</span>
+      <span id="usb">USB 3.0</span>
+      <span class="sep">|</span>
+      <span id="maxFreq">24 MHz MAX</span>
+      <span class="sep">|</span>
+      <span id="tReadout">T = 459.09 MS</span>
+    </footer>
+
     <script src="app.js"></script>
   </body>
 </html>
