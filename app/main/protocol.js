@@ -14,7 +14,7 @@ const TYPE = {
 
 
 // CRC-16/CCITT-FALSE
-    // bit-exact with crc16_update() in the firmware
+    // matches crc16_update() in the firmware
 function crc16(bytes) {
   let crc = 0xffff;
   for (const byte of bytes) {
@@ -101,7 +101,9 @@ function createFrameParser(onPacket, onError) { // onError logs version mismatch
 
       const version = buffer[2];
       if (version !== PROTOCOL_VERSION) {
-        onError?.(new Error(`Unsupported protocol version 0x${version.toString(16)}`));
+        const err = new Error(`Unsupported protocol version 0x${version.toString(16)}`);
+        err.code = 'VERSION_MISMATCH';
+        onError?.(err);
         buffer = buffer.subarray(2); // drop this sync pair and resync
         continue;
       }
@@ -120,7 +122,9 @@ function createFrameParser(onPacket, onError) { // onError logs version mismatch
       if (receivedCrc === expectedCrc) {
         onPacket({ type, id, payload: Buffer.from(payload) });
       } else {
-        onError?.(new Error('CRC mismatch'));
+        const err = new Error('CRC mismatch');
+        err.code = 'CRC_MISMATCH';
+        onError?.(err);
       }
 
       buffer = buffer.subarray(frameLength);

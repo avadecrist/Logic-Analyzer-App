@@ -1,5 +1,5 @@
-const WINDOW_MS = 2000; // time axis span
-const TICKS_MS = [0, 400, 800, 1200, 1600, 2000];
+const WINDOW_MS = 2000; // visible time-axis span (width of the scrolling window)
+const TICK_STEP_MS = 400; // spacing between ruler/grid ticks
 const FLAT_Y = 80; // resting (low) line position within the 0-100 viewBox
 
 const CHANNELS = [
@@ -24,24 +24,35 @@ const rulerTrackEl = document.getElementById('rulerTrack');
 const gridOverlayEl = document.getElementById('gridOverlay');
 const cursorLineEl = document.getElementById('cursorLine');
 
-function buildRuler() {
+// note: still trying to figure out how to implement the horizontal scroll effect so the cursor line never goes off screen
+function tickValuesForOffset(offsetMs) {
+  const startTick = Math.floor(offsetMs / TICK_STEP_MS) * TICK_STEP_MS;
+  const ticks = [];
+  for (let ms = startTick; ms <= offsetMs + WINDOW_MS; ms += TICK_STEP_MS) {
+    ticks.push(ms);
+  }
+  return ticks;
+}
+
+function buildRuler(offsetMs = 0) {
   rulerTrackEl.innerHTML = '';
-  TICKS_MS.forEach((ms) => {
+  tickValuesForOffset(offsetMs).forEach((ms) => {
     const tick = document.createElement('div');
     tick.className = 'tick';
-    tick.style.left = `${(ms / WINDOW_MS) * 100}%`;
+    tick.style.left = `${((ms - offsetMs) / WINDOW_MS) * 100}%`;
     tick.textContent = `${ms}ms`;
     rulerTrackEl.appendChild(tick);
   });
 }
 
-function buildGridOverlay() {
+function buildGridOverlay(offsetMs = 0) {
   gridOverlayEl.innerHTML = '';
-  TICKS_MS.forEach((ms) => {
-    if (ms === 0) return;
+  tickValuesForOffset(offsetMs).forEach((ms) => {
+    const leftPct = ((ms - offsetMs) / WINDOW_MS) * 100;
+    if (leftPct <= 0) return;
     const line = document.createElement('div');
     line.className = 'grid-line';
-    line.style.left = `${(ms / WINDOW_MS) * 100}%`;
+    line.style.left = `${leftPct}%`;
     gridOverlayEl.appendChild(line);
   });
 }
@@ -86,6 +97,9 @@ function buildEditableSubLabel(channel) {
 
   span.addEventListener('blur', commit);
 
+  // renaming shouldn't toggle the row's selection state
+  span.addEventListener('click', (e) => e.stopPropagation());
+
   return span;
 }
 
@@ -93,6 +107,16 @@ function buildChannelRow(channel) {
   const row = document.createElement('div');
   row.className = 'channel-row';
   row.style.setProperty('--ch-color', channel.color);
+  row.tabIndex = 0;
+  row.setAttribute('role', 'button');
+  row.setAttribute('aria-pressed', 'false');
+  row.addEventListener('click', () => selectChannel(channel.id));
+  row.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      selectChannel(channel.id);
+    }
+  });
 
   const label = document.createElement('div');
   label.className = 'channel-label';
@@ -145,6 +169,16 @@ function buildChannelRow(channel) {
 }
 
 const rowRefs = [];
+let selectedChannelId = null;
+
+function selectChannel(channelId) {
+  selectedChannelId = selectedChannelId === channelId ? null : channelId;
+  rowRefs.forEach(({ channel, row }) => {
+    const isSelected = channel.id === selectedChannelId;
+    row.classList.toggle('selected', isSelected);
+    row.setAttribute('aria-pressed', String(isSelected));
+  });
+}
 
 function buildChannels() {
   channelsEl.innerHTML = '';
@@ -152,19 +186,19 @@ function buildChannels() {
   CHANNELS.forEach((channel) => {
     const { row, polyline } = buildChannelRow(channel);
     channelsEl.appendChild(row);
-    rowRefs.push({ channel, polyline });
+    rowRefs.push({ channel, polyline, row });
   });
 }
 
-function setCursorPct(pct) {
+function setCursorPct(pct, ms) {
   cursorLineEl.style.left = `calc(var(--label-w) + (100% - var(--label-w)) * ${pct})`;
-  const rulerCursor = document.getElementById('cursorReadout') || document.createElement('div');
-  if (!rulerCursor.id) {
+  let rulerCursor = document.getElementById('cursorReadout');
+  if (!rulerCursor) {
+    rulerCursor = document.createElement('div');
     rulerCursor.id = 'cursorReadout';
     rulerCursor.className = 'cursor-readout';
     rulerTrackEl.appendChild(rulerCursor);
   }
-  const ms = pct * WINDOW_MS;
   rulerCursor.style.left = `${pct * 100}%`;
   rulerCursor.textContent = `${ms.toFixed(1)}ms`;
 }
@@ -172,7 +206,7 @@ function setCursorPct(pct) {
 buildRuler();
 buildGridOverlay();
 buildChannels();
-setCursorPct(459.1 / WINDOW_MS);
+setCursorPct(0, 0);
 
 // start/stop + timer
 const startStopButton = document.getElementById('startStop');
@@ -185,8 +219,10 @@ const tReadoutEl = document.getElementById('tReadout');
 
 let isGettingData = false;
 let startTimestamp = 0;
-let elapsedMs = 459.517; // matches initial halted readout
+let elapsedMs = 0;
 let rafId = null;
+let lastTickBucket = 0; // which 400ms scroll bucket the ruler/grid are built for
+let currentOffsetMs = 0; // ms value at the left edge of the visible window
 
 function formatTimer(ms) {
   const totalMs = Math.max(0, ms);
@@ -204,13 +240,56 @@ function tick(now) {
   const currentElapsed = elapsedMs + (now - startTimestamp);
   timerEl.textContent = formatTimer(currentElapsed);
 
-  const sweepMs = currentElapsed % WINDOW_MS;
-  const pct = sweepMs / WINDOW_MS;
-  setCursorPct(pct);
-  tReadoutEl.textContent = `T = ${sweepMs.toFixed(2)} MS`; 
+  // Once the capture runs past the visible window, keep the cursor pinned
+  // at the right edge and scroll the ruler/grid leftward instead of
+  // wrapping back to 0.
+  const offsetMs = Math.max(0, currentElapsed - WINDOW_MS);
+  const bucket = Math.floor(offsetMs / TICK_STEP_MS);
+  if (bucket !== lastTickBucket) {
+    buildRuler(offsetMs);
+    buildGridOverlay(offsetMs);
+    lastTickBucket = bucket;
+  }
+
+  currentOffsetMs = offsetMs;
+  const pct = Math.min(1, (currentElapsed - offsetMs) / WINDOW_MS);
+  setCursorPct(pct, currentElapsed);
+  tReadoutEl.textContent = `T = ${currentElapsed.toFixed(2)} MS`;
 
   rafId = requestAnimationFrame(tick);
 }
+
+// moving the cursor to a specific spot
+function pctFromClientX(clientX) {
+  const rect = rulerTrackEl.getBoundingClientRect();
+  const pct = (clientX - rect.left) / rect.width;
+  return Math.min(1, Math.max(0, pct));
+}
+
+function scrubToClientX(clientX) {
+  const pct = pctFromClientX(clientX);
+  const ms = currentOffsetMs + pct * WINDOW_MS;
+  setCursorPct(pct, ms);
+  tReadoutEl.textContent = `T = ${ms.toFixed(2)} MS`;
+}
+
+function attachScrubbing(el) {
+  el.addEventListener('mousedown', (e) => {
+    if (isGettingData) return;
+    e.preventDefault();
+    scrubToClientX(e.clientX);
+    const onMove = (moveEvent) => scrubToClientX(moveEvent.clientX);
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  });
+}
+
+attachScrubbing(rulerTrackEl);
+attachScrubbing(channelsEl);
 
 startStopButton.addEventListener('click', () => {
   if (!isGettingData) {

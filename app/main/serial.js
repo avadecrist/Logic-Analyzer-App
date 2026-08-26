@@ -20,7 +20,7 @@ function allocateId() {
   return id;
 }
 
-// dispatches a validated incoming packet to whichever command is waiting on its ID, 
+// dispatches a validated incoming packet to whichever command is waiting on its ID,
 // then hands off to protocol.js to interpret it.
 function handlePacket({ type, id, payload }) {
   const request = pending.get(id);
@@ -36,6 +36,20 @@ function handlePacket({ type, id, payload }) {
   }
 }
 
+// used for disconnects and for unusable frames (CRC/version mismatch)
+function failAllPending(message) {
+  for (const request of pending.values()) {
+    clearTimeout(request.timer);
+    request.resolve({ ok: false, error: message });
+  }
+  pending.clear();
+}
+
+const FRAME_ERROR_MESSAGES = {
+  CRC_MISMATCH: 'Corrupted packet received (CRC mismatch)',
+  VERSION_MISMATCH: 'Received packet with an unsupported protocol version',
+};
+
 async function ensureConnected() {
   if (port && port.isOpen) return port;
 
@@ -49,7 +63,11 @@ async function ensureConnected() {
   }
 
   port = new SerialPort({ path, baudRate: BAUD_RATE });
-  feed = createFrameParser(handlePacket, (err) => console.warn('[serial] frame error:', err.message));
+  feed = createFrameParser(handlePacket, (err) => {
+    console.warn('[serial] frame error:', err.message);
+    const message = FRAME_ERROR_MESSAGES[err.code];
+    if (message) failAllPending(message);
+  });
 
   port.on('data', (chunk) => feed(chunk));
   port.on('close', () => {
@@ -66,7 +84,7 @@ async function ensureConnected() {
 }
 
 // sends a command and resolves once the matching response arrives 
-// (or with ok:false on timeout/write failure/unknown command name)
+// (or times out after 1 sec)
 async function sendCommand(name, { timeoutMs = RESPONSE_TIMEOUT_MS } = {}) {
   let activePort;
   try {
@@ -102,11 +120,7 @@ async function sendCommand(name, { timeoutMs = RESPONSE_TIMEOUT_MS } = {}) {
 }
 
 function disconnect() {
-  for (const { timer, resolve } of pending.values()) {
-    clearTimeout(timer);
-    resolve({ ok: false, error: 'Disconnected' });
-  }
-  pending.clear();
+  failAllPending('Disconnected');
 
   if (port && port.isOpen) port.close();
   port = null;
