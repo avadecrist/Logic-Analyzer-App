@@ -1,6 +1,8 @@
-const WINDOW_MS = 2000; // visible time-axis span (width of the scrolling window)
+const WINDOW_MS = 2000; // width of the scrolling window
+const PIN_LEAD_MS = 200; // gap after cursor once the view starts following it
+const FOLLOW_THRESHOLD_MS = WINDOW_MS - PIN_LEAD_MS; // elapsed time at which the view starts scrolling
 const TICK_STEP_MS = 400; // spacing between ruler/grid ticks
-const FLAT_Y = 80; // resting (low) line position within the 0-100 viewBox
+const FLAT_Y = 80; // resting line position before waveforms are captured
 
 const CHANNELS = [
   { id: 0, sub: 'Label_0', color: 'var(--ch0)', freq: 8 },
@@ -19,12 +21,12 @@ function flatLinePoints() {
 }
 
 // DOM building
+const analyzerEl = document.getElementById('analyzer');
 const channelsEl = document.getElementById('channels');
 const rulerTrackEl = document.getElementById('rulerTrack');
 const gridOverlayEl = document.getElementById('gridOverlay');
 const cursorLineEl = document.getElementById('cursorLine');
 
-// note: still trying to figure out how to implement the horizontal scroll effect so the cursor line never goes off screen
 function tickValuesForOffset(offsetMs) {
   const startTick = Math.floor(offsetMs / TICK_STEP_MS) * TICK_STEP_MS;
   const ticks = [];
@@ -97,7 +99,7 @@ function buildEditableSubLabel(channel) {
 
   span.addEventListener('blur', commit);
 
-  // renaming shouldn't toggle the row's selection state
+  // renaming won't toggle the row's selection state
   span.addEventListener('click', (e) => e.stopPropagation());
 
   return span;
@@ -203,6 +205,20 @@ function setCursorPct(pct, ms) {
   rulerCursor.textContent = `${ms.toFixed(1)}ms`;
 }
 
+// absolute time (ms) the cursor marker points at; kept separate from the
+// visible window (currentOffsetMs) so the marker can be relocated/hidden
+// correctly whenever the window is panned after a capture stops
+let cursorMs = 0;
+
+function updateCursorMarker() {
+  const pct = (cursorMs - currentOffsetMs) / WINDOW_MS;
+  const readout = document.getElementById('cursorReadout');
+  const inView = pct >= 0 && pct <= 1;
+  cursorLineEl.style.display = inView ? '' : 'none';
+  if (readout) readout.style.display = inView ? '' : 'none';
+  if (inView) setCursorPct(pct, cursorMs);
+}
+
 buildRuler();
 buildGridOverlay();
 buildChannels();
@@ -223,6 +239,7 @@ let elapsedMs = 0;
 let rafId = null;
 let lastTickBucket = 0; // which 400ms scroll bucket the ruler/grid are built for
 let currentOffsetMs = 0; // ms value at the left edge of the visible window
+let totalCapturedMs = 0; // how much data has been captured so far
 
 function formatTimer(ms) {
   const totalMs = Math.max(0, ms);
@@ -240,10 +257,8 @@ function tick(now) {
   const currentElapsed = elapsedMs + (now - startTimestamp);
   timerEl.textContent = formatTimer(currentElapsed);
 
-  // Once the capture runs past the visible window, keep the cursor pinned
-  // at the right edge and scroll the ruler/grid leftward instead of
-  // wrapping back to 0.
-  const offsetMs = Math.max(0, currentElapsed - WINDOW_MS);
+  // cursor pins to right edge of window once the elapsed time exceeds the follow threshold
+  const offsetMs = Math.max(0, currentElapsed - FOLLOW_THRESHOLD_MS);
   const bucket = Math.floor(offsetMs / TICK_STEP_MS);
   if (bucket !== lastTickBucket) {
     buildRuler(offsetMs);
@@ -252,8 +267,13 @@ function tick(now) {
   }
 
   currentOffsetMs = offsetMs;
-  const pct = Math.min(1, (currentElapsed - offsetMs) / WINDOW_MS);
+  totalCapturedMs = currentElapsed;
+  cursorMs = currentElapsed;
+  const pct = Math.min(FOLLOW_THRESHOLD_MS / WINDOW_MS, (currentElapsed - offsetMs) / WINDOW_MS);
+  cursorLineEl.style.display = '';
   setCursorPct(pct, currentElapsed);
+  const readout = document.getElementById('cursorReadout');
+  if (readout) readout.style.display = '';
   tReadoutEl.textContent = `T = ${currentElapsed.toFixed(2)} MS`;
 
   rafId = requestAnimationFrame(tick);
@@ -269,7 +289,11 @@ function pctFromClientX(clientX) {
 function scrubToClientX(clientX) {
   const pct = pctFromClientX(clientX);
   const ms = currentOffsetMs + pct * WINDOW_MS;
+  cursorMs = ms;
+  cursorLineEl.style.display = '';
   setCursorPct(pct, ms);
+  const readout = document.getElementById('cursorReadout');
+  if (readout) readout.style.display = '';
   tReadoutEl.textContent = `T = ${ms.toFixed(2)} MS`;
 }
 
@@ -291,6 +315,31 @@ function attachScrubbing(el) {
 attachScrubbing(rulerTrackEl);
 attachScrubbing(channelsEl);
 
+// panning through captured data (only after clicking "stop")
+function maxOffsetMs() {
+  return Math.max(0, totalCapturedMs - FOLLOW_THRESHOLD_MS); // tracks when two-fingers swipe on mousepad
+}
+
+function panTimelineBy(deltaMs) {
+  const clamped = Math.min(maxOffsetMs(), Math.max(0, currentOffsetMs + deltaMs));
+  if (clamped === currentOffsetMs) return;
+  currentOffsetMs = clamped;
+  buildRuler(currentOffsetMs);
+  buildGridOverlay(currentOffsetMs);
+  lastTickBucket = Math.floor(currentOffsetMs / TICK_STEP_MS);
+  updateCursorMarker();
+}
+
+analyzerEl.addEventListener('wheel', (e) => {
+  if (isGettingData) return; // view auto-follows the cursor while running
+  if (maxOffsetMs() <= 0) return; // nothing beyond the current window to reveal
+  if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return; // let vertical scrolling behave normally
+  e.preventDefault();
+  const rect = rulerTrackEl.getBoundingClientRect();
+  const msPerPixel = WINDOW_MS / rect.width;
+  panTimelineBy(e.deltaX * msPerPixel);
+}, { passive: false });
+
 startStopButton.addEventListener('click', () => {
   if (!isGettingData) {
     isGettingData = true;
@@ -300,6 +349,7 @@ startStopButton.addEventListener('click', () => {
     statusDot.classList.add('live');
     statusText.textContent = 'RUNNING';
     startTimestamp = performance.now();
+    lastTickBucket = -1; // force the ruler/grid to resync even if left mid-scroll
     rafId = requestAnimationFrame(tick);
   } else {
     isGettingData = false;
@@ -309,6 +359,8 @@ startStopButton.addEventListener('click', () => {
     statusDot.classList.remove('live');
     statusText.textContent = 'HALTED';
     elapsedMs += performance.now() - startTimestamp;
+    totalCapturedMs = elapsedMs;
+    cursorMs = elapsedMs;
     if (rafId) cancelAnimationFrame(rafId);
   }
 });
