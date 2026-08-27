@@ -340,8 +340,27 @@ analyzerEl.addEventListener('wheel', (e) => {
   panTimelineBy(e.deltaX * msPerPixel);
 }, { passive: false });
 
+// START begins from a clean slate
+function resetCapture() {
+  elapsedMs = 0;
+  totalCapturedMs = 0;
+  cursorMs = 0;
+  currentOffsetMs = 0;
+  lastTickBucket = -1;
+
+  rowRefs.forEach(({ polyline }) => polyline.setAttribute('points', flatLinePoints()));
+
+  buildRuler(0);
+  buildGridOverlay(0);
+  timerEl.textContent = formatTimer(0);
+  tReadoutEl.textContent = 'T = 0.00 MS';
+  setCursorPct(0, 0);
+}
+
 startStopButton.addEventListener('click', () => {
   if (!isGettingData) {
+    // reset and start acquisition
+    resetCapture();
     isGettingData = true;
     startStopLabel.textContent = 'STOP';
     startStopIcon.textContent = '■';
@@ -349,9 +368,9 @@ startStopButton.addEventListener('click', () => {
     statusDot.classList.add('live');
     statusText.textContent = 'RUNNING';
     startTimestamp = performance.now();
-    lastTickBucket = -1; // force the ruler/grid to resync even if left mid-scroll
     rafId = requestAnimationFrame(tick);
   } else {
+    // stop acquisition
     isGettingData = false;
     startStopLabel.textContent = 'START';
     startStopIcon.textContent = '▶';

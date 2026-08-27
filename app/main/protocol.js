@@ -10,6 +10,10 @@ const HEADER_LENGTH = 8; // SYNC(2) + VERSION(1) + TYPE(1) + ID(2) + LENGTH(2)
 const TYPE = {
   PING: 0x01,
   PONG: 0x02,
+  START: 0x03,
+  START_ACK: 0x04,
+  STOP: 0x05,
+  STOP_ACK: 0x06,
 };
 
 
@@ -57,6 +61,24 @@ const COMMANDS = {
         return { ok: false, error: `Unexpected response type 0x${responseType.toString(16)}` };
       }
       return { ok: true, version: parsePongVersion(payload) };
+    },
+  },
+  start: {
+    build: (id) => buildPacket(TYPE.START, Buffer.alloc(0), id),
+    parseResponse: (responseType, payload) => {
+      if (responseType !== TYPE.START_ACK) {
+        return { ok: false, error: `Unexpected response type 0x${responseType.toString(16)}` };
+      }
+      return { ok: true };
+    },
+  },
+  stop: {
+    build: (id) => buildPacket(TYPE.STOP, Buffer.alloc(0), id),
+    parseResponse: (responseType, payload) => {
+      if (responseType !== TYPE.STOP_ACK) {
+        return { ok: false, error: `Unexpected response type 0x${responseType.toString(16)}` };
+      }
+      return { ok: true };
     },
   },
 };
