@@ -14,6 +14,7 @@ const TYPE = {
   START_ACK: 0x04,
   STOP: 0x05,
   STOP_ACK: 0x06,
+  SAMPLES: 0x07, // unsolicited push, board -> host, sent repeatedly while acquisition is running
 };
 
 
@@ -49,6 +50,24 @@ function buildPacket(type, payload = Buffer.alloc(0), id) {
 function parsePongVersion(payload) {
   if (payload.length < 2) return null;
   return `${payload[0]}.${payload[1]}`;
+}
+
+// SAMPLES payload: elapsedMs + 1 byte channel bitmask,
+// bit i = channel i's level (1 = high) at that instant
+// One sample tick for all 8 channels
+function buildSamplesPayload(elapsedMs, channelBits) {
+  const payload = Buffer.alloc(5);
+  payload.writeUInt32LE(elapsedMs, 0);
+  payload.writeUInt8(channelBits, 4);
+  return payload;
+}
+
+function parseSamplesPayload(payload) {
+  if (payload.length < 5) return null;
+  return {
+    elapsedMs: payload.readUInt32LE(0),
+    channelBits: payload.readUInt8(4),
+  };
 }
 
 // maps the command names the renderer/IPC layer
@@ -164,6 +183,8 @@ module.exports = {
   buildPacket,
   createFrameParser,
   parsePongVersion,
+  buildSamplesPayload,
+  parseSamplesPayload,
   buildCommand,
   parseCommandResponse,
 };
