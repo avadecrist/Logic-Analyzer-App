@@ -1,7 +1,8 @@
 // isolates all hardware communication; this file moves bytes and correlates them by packet ID
 
+const { EventEmitter } = require('node:events');
 const { SerialPort } = require('serialport');
-const { createFrameParser, buildCommand, parseCommandResponse } = require('./protocol');
+const { TYPE, createFrameParser, buildCommand, parseCommandResponse, parseSamplesPayload } = require('./protocol');
 
 const BAUD_RATE = 115200; // firmware runs UART at 100MHz / 868 clks-per-bit (~115207)
 const RESPONSE_TIMEOUT_MS = 1000;
@@ -14,6 +15,10 @@ let feed = null;
 let nextId = 1;
 const pending = new Map(); // id -> { commandName, resolve, timer }
 
+// for packets that aren't a reply to anything (e.g. SAMPLES streamed during acquisition,
+// see commands.md's ID-0 convention) -- consumed by main.js to forward over IPC
+const events = new EventEmitter();
+
 function allocateId() {
   const id = nextId;
   nextId = (nextId % 0xffff) + 1; // wrap around, skip 0
@@ -23,8 +28,13 @@ function allocateId() {
 // dispatches a validated incoming packet to whichever command is waiting on its ID,
 // then hands off to protocol.js to interpret it.
 function handlePacket({ type, id, payload }) {
+  if (id === 0) {
+    handleUnsolicitedPacket(type, payload);
+    return;
+  }
+
   const request = pending.get(id);
-  if (!request) return; // unsolicited or already-timed-out packet
+  if (!request) return; // already-timed-out packet
 
   clearTimeout(request.timer);
   pending.delete(id);
@@ -34,6 +44,13 @@ function handlePacket({ type, id, payload }) {
   } catch (err) {
     request.resolve({ ok: false, error: err.message });
   }
+}
+
+function handleUnsolicitedPacket(type, payload) {
+  if (type !== TYPE.SAMPLES) return; // unrecognized push, ignore
+
+  const samples = parseSamplesPayload(payload);
+  if (samples) events.emit('samples', samples);
 }
 
 // used for disconnects and for unusable frames (CRC/version mismatch)
@@ -58,7 +75,7 @@ async function ensureConnected() {
     const ports = await SerialPort.list();
     if (ports.length === 0) throw new Error('No serial devices found');
 
-    // FUTURE IMPLEMENTATION: have dropdown to let the user choose a port when more than one is available.
+    // FUTURE IMPLEMENTATION?: have dropdown to let the user choose a port when more than one is available
     path = ports[0].path;
   }
 
@@ -83,8 +100,7 @@ async function ensureConnected() {
   return port;
 }
 
-// sends a command and resolves once the matching response arrives 
-// (or times out after 1 sec)
+// sends a command and resolves once the matching response arrives (or times out after 1 sec)
 async function sendCommand(name, { timeoutMs = RESPONSE_TIMEOUT_MS } = {}) {
   let activePort;
   try {
@@ -127,4 +143,4 @@ function disconnect() {
   feed = null;
 }
 
-module.exports = { sendCommand, disconnect };
+module.exports = { sendCommand, disconnect, events };

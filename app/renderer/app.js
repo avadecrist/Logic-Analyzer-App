@@ -2,7 +2,8 @@ const WINDOW_MS = 2000; // width of the scrolling window
 const PIN_LEAD_MS = 200; // gap after cursor once the view starts following it
 const FOLLOW_THRESHOLD_MS = WINDOW_MS - PIN_LEAD_MS; // elapsed time at which the view starts scrolling
 const TICK_STEP_MS = 400; // spacing between ruler/grid ticks
-const FLAT_Y = 80; // resting line position before waveforms are captured
+const WAVE_HIGH_Y = 20; // logic-high y position
+const WAVE_LOW_Y = 80; // logic-low y position
 
 const CHANNELS = [
   { id: 0, sub: 'Label_0', color: 'var(--ch0)', freq: 8 },
@@ -15,9 +16,9 @@ const CHANNELS = [
   { id: 7, sub: 'Label_7', color: 'var(--ch7)', freq: 18 },
 ];
 
-// waveform generation 
+// low line before sample is received
 function flatLinePoints() {
-  return `0,${FLAT_Y} ${WINDOW_MS},${FLAT_Y}`;
+  return `0,${WAVE_LOW_Y} ${WINDOW_MS},${WAVE_LOW_Y}`;
 }
 
 // DOM building
@@ -192,6 +193,73 @@ function buildChannels() {
   });
 }
 
+// waveform points are drawn once at their absolute capture time and never moved
+// panning/scrolling the visible window just shifts each SVG's viewBox origin
+function updateWaveViewBox(offsetMs) {
+  rowRefs.forEach(({ polyline }) => {
+    polyline.ownerSVGElement.setAttribute('viewBox', `${offsetMs} 0 ${WINDOW_MS} 100`);
+  });
+}
+
+function appendWavePoint(polyline, x, y) {
+  const pt = polyline.ownerSVGElement.createSVGPoint();
+  pt.x = x;
+  pt.y = y;
+  polyline.points.appendItem(pt);
+}
+
+// per-channel record of every level change during the run
+//  independent from the SVG so the "jump to edge" feature can binary-search it without touching the DOM
+function createEdgeBuffer(initialCapacity = 64) {
+  return {
+    edgeTimes: new Float64Array(initialCapacity), // ms of each transition, ascending
+    edgeValues: new Uint8Array(initialCapacity), // 0/1 level starting at that time
+    edgeCount: 0, // filled length; the arrays themselves may be over-allocated
+  };
+}
+
+function pushEdge(buffer, tMs, value) {
+  if (buffer.edgeCount === buffer.edgeTimes.length) {
+    const grownTimes = new Float64Array(buffer.edgeTimes.length * 2);
+    grownTimes.set(buffer.edgeTimes);
+    buffer.edgeTimes = grownTimes;
+
+    const grownValues = new Uint8Array(buffer.edgeValues.length * 2);
+    grownValues.set(buffer.edgeValues);
+    buffer.edgeValues = grownValues;
+  }
+
+  buffer.edgeTimes[buffer.edgeCount] = tMs;
+  buffer.edgeValues[buffer.edgeCount] = value;
+  buffer.edgeCount += 1;
+}
+
+// draws one incoming sample tick as a square-wave on each channel's polyline
+function handleSamplePacket({ elapsedMs: sampleMs, channelBits }) {
+  rowRefs.forEach(({ channel, polyline }) => {
+    const level = (channelBits >> channel.id) & 1;
+    const y = level ? WAVE_HIGH_Y : WAVE_LOW_Y;
+    const points = polyline.points;
+
+    // if it's the first sample for this channel --> drop the flat resting line and start a new trace
+    if (channel.lastLevel === null) {
+      points.clear();
+      appendWavePoint(polyline, sampleMs, y);
+      appendWavePoint(polyline, sampleMs, y);
+      pushEdge(channel.edges, sampleMs, level);
+    } else if (level !== channel.lastLevel) { // else end the old horizontal line, draw vertical transition, and start new horizontal line
+      points.getItem(points.numberOfItems - 1).x = sampleMs;
+      appendWavePoint(polyline, sampleMs, y);
+      appendWavePoint(polyline, sampleMs, y);
+      pushEdge(channel.edges, sampleMs, level);
+    } else {
+      points.getItem(points.numberOfItems - 1).x = sampleMs; // push the run's end anchor forward to continue horizontal line
+    }
+
+    channel.lastLevel = level;
+  });
+}
+
 function setCursorPct(pct, ms) {
   cursorLineEl.style.left = `calc(var(--label-w) + (100% - var(--label-w)) * ${pct})`;
   let rulerCursor = document.getElementById('cursorReadout');
@@ -205,9 +273,7 @@ function setCursorPct(pct, ms) {
   rulerCursor.textContent = `${ms.toFixed(1)}ms`;
 }
 
-// absolute time (ms) the cursor marker points at; kept separate from the
-// visible window (currentOffsetMs) so the marker can be relocated/hidden
-// correctly whenever the window is panned after a capture stops
+// absolute time (ms) the cursor marker points at
 let cursorMs = 0;
 
 function updateCursorMarker() {
@@ -240,6 +306,7 @@ let rafId = null;
 let lastTickBucket = 0; // which 400ms scroll bucket the ruler/grid are built for
 let currentOffsetMs = 0; // ms value at the left edge of the visible window
 let totalCapturedMs = 0; // how much data has been captured so far
+let unsubscribeSamples = null;
 
 function formatTimer(ms) {
   const totalMs = Math.max(0, ms);
@@ -269,6 +336,7 @@ function tick(now) {
   currentOffsetMs = offsetMs;
   totalCapturedMs = currentElapsed;
   cursorMs = currentElapsed;
+  updateWaveViewBox(offsetMs);
   const pct = Math.min(FOLLOW_THRESHOLD_MS / WINDOW_MS, (currentElapsed - offsetMs) / WINDOW_MS);
   cursorLineEl.style.display = '';
   setCursorPct(pct, currentElapsed);
@@ -326,6 +394,7 @@ function panTimelineBy(deltaMs) {
   currentOffsetMs = clamped;
   buildRuler(currentOffsetMs);
   buildGridOverlay(currentOffsetMs);
+  updateWaveViewBox(currentOffsetMs);
   lastTickBucket = Math.floor(currentOffsetMs / TICK_STEP_MS);
   updateCursorMarker();
 }
@@ -340,6 +409,61 @@ analyzerEl.addEventListener('wheel', (e) => {
   panTimelineBy(e.deltaX * msPerPixel);
 }, { passive: false });
 
+// jump to edge uses a binary search over a channel's edge buffer
+function findEdgeIndexAfter(edges, tMs) {
+  let lo = 0;
+  let hi = edges.edgeCount;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (edges.edgeTimes[mid] > tMs) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo < edges.edgeCount ? lo : -1;
+}
+
+function findEdgeIndexBefore(edges, tMs) {
+  let lo = 0;
+  let hi = edges.edgeCount;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (edges.edgeTimes[mid] < tMs) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo > 0 ? lo - 1 : -1;
+}
+
+function jumpToEdge(direction) {
+  if (isGettingData) {
+    showToast('Stop the capture to browse edges', 'error');
+    return;
+  }
+  if (selectedChannelId === null) {
+    showToast('Select a channel first', 'error');
+    return;
+  }
+
+  const channel = CHANNELS.find((c) => c.id === selectedChannelId);
+  const edges = channel.edges;
+  if (!edges || edges.edgeCount === 0) {
+    showToast('No captured data for this channel', 'error');
+    return;
+  }
+
+  const idx = direction > 0 ? findEdgeIndexAfter(edges, cursorMs) : findEdgeIndexBefore(edges, cursorMs);
+  if (idx === -1) {
+    showToast(direction > 0 ? 'No later edge' : 'No earlier edge', 'error');
+    return;
+  }
+
+  cursorMs = edges.edgeTimes[idx];
+  const desiredOffset = Math.min(maxOffsetMs(), Math.max(0, cursorMs - WINDOW_MS / 2));
+  panTimelineBy(desiredOffset - currentOffsetMs); // no-op (and no redraw) if the edge is already in view
+  updateCursorMarker();
+}
+
+document.getElementById('prevEdgeBtn').addEventListener('click', () => jumpToEdge(-1));
+document.getElementById('nextEdgeBtn').addEventListener('click', () => jumpToEdge(1));
+
 // START begins from a clean slate
 function resetCapture() {
   elapsedMs = 0;
@@ -348,19 +472,31 @@ function resetCapture() {
   currentOffsetMs = 0;
   lastTickBucket = -1;
 
-  rowRefs.forEach(({ polyline }) => polyline.setAttribute('points', flatLinePoints()));
+  rowRefs.forEach(({ channel, polyline }) => {
+    polyline.setAttribute('points', flatLinePoints());
+    channel.lastLevel = null; // so the next sample starts a fresh trace instead of continuing the old one
+    channel.edges = createEdgeBuffer();
+  });
 
   buildRuler(0);
   buildGridOverlay(0);
+  updateWaveViewBox(0);
   timerEl.textContent = formatTimer(0);
   tReadoutEl.textContent = 'T = 0.00 MS';
   setCursorPct(0, 0);
 }
 
-startStopButton.addEventListener('click', () => {
+startStopButton.addEventListener('click', async () => {
   if (!isGettingData) {
     // reset and start acquisition
     resetCapture();
+    const result = await window.api.sendCommand('start');
+    if (!result.ok) {
+      showToast(`Failed to start: ${result.error}`, 'error');
+      return;
+    }
+
+    unsubscribeSamples = window.api.onSamples(handleSamplePacket);
     isGettingData = true;
     startStopLabel.textContent = 'STOP';
     startStopIcon.textContent = '■';
@@ -370,7 +506,15 @@ startStopButton.addEventListener('click', () => {
     startTimestamp = performance.now();
     rafId = requestAnimationFrame(tick);
   } else {
-    // stop acquisition
+    // stop acquisition and freeze whatever was captured
+    const result = await window.api.sendCommand('stop');
+    if (!result.ok) showToast(`Board didn't confirm stop: ${result.error}`, 'error');
+
+    if (unsubscribeSamples) {
+      unsubscribeSamples();
+      unsubscribeSamples = null;
+    }
+
     isGettingData = false;
     startStopLabel.textContent = 'START';
     startStopIcon.textContent = '▶';

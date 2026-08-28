@@ -8,7 +8,6 @@ const createWindow = () => {
     height: 860,
     minWidth: 900,
     minHeight: 560,
-    backgroundColor: '#080b14',
     webPreferences: {
       preload: path.join(__dirname, '../preload/preload.js')
     }
@@ -16,6 +15,10 @@ const createWindow = () => {
 
   win.loadFile('renderer/index.html')
 }
+
+serial.events.on('samples', (data) => {
+  BrowserWindow.getAllWindows().forEach((win) => win.webContents.send('board:samples', data))
+})
 
 app.whenReady().then(() => {
   createWindow()
